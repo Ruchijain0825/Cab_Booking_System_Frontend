@@ -172,6 +172,8 @@ export default function DriverDashboard() {
 
   const completedRides = Number(earnings.completed_rides || 0);
   const totalEarnings = Number(earnings.total_earnings || 0);
+  const todayEarnings = Number(earnings.today_earnings || 0);
+  const todayRides = Number(earnings.today_rides || 0);
   const averageFare = Number(earnings.average_fare || 0);
   const maxDaily = Math.max(
     1,
@@ -364,11 +366,20 @@ export default function DriverDashboard() {
                   <button onClick={() => setActivePage("Earnings")} className="text-sm font-semibold text-blue-600">View Details →</button>
                 </div>
                 <div className="mt-3 flex items-center gap-3">
-                  <p className="text-3xl font-extrabold">{money(totalEarnings)}</p>
-                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">Total</span>
-                </div>
-                <p className="mt-1 text-xs text-slate-400">Total earnings returned by your API</p>
-                {dailyEarnings.length ? (
+  <p className="text-3xl font-extrabold">
+    {money(todayEarnings)}
+  </p>
+
+  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">
+    Today
+  </span>
+</div>
+
+<p className="mt-1 text-xs text-slate-400">
+  {todayRides} completed rides today
+</p>
+
+{dailyEarnings.length ? (
                   <div className="mt-5 flex h-32 items-end gap-2 border-b border-slate-100 pb-2">
                     {[...dailyEarnings].slice(-7).map((item, index) => {
                       const amount = Number(item.daily_earnings || 0);

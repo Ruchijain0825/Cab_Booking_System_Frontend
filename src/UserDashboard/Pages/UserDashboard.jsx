@@ -1,11 +1,12 @@
-
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import RideMap from "../Pages/RideMap.jsx";
+import ChatPanel from "../Components/ChatPanel.jsx";
 
 const API_URL =
   import.meta.env.VITE_API_URL || "http://localhost:8080";
 
 export default function UserDashboard() {
+  const [chatOpen, setChatOpen] = useState(false);
   const [pickup, setPickup] = useState("");
   const [drop, setDrop] = useState("");
   const [drivers, setDrivers] = useState([]);
@@ -15,7 +16,8 @@ export default function UserDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const request = async (path, options = {}) => {
+  // API request helper
+  const request = useCallback(async (path, options = {}) => {
     const token = sessionStorage.getItem("userAccessToken");
 
     const response = await fetch(`${API_URL}${path}`, {
@@ -34,12 +36,11 @@ export default function UserDashboard() {
     }
 
     return result;
-  };
+  }, []);
 
-  const loadDashboard = async () => {
+  // Load dashboard data
+  const loadDashboard = useCallback(async () => {
     try {
-      setError("");
-
       const [driverData, activeData, historyData] =
         await Promise.all([
           request("/api/user/drivers/available"),
@@ -48,17 +49,37 @@ export default function UserDashboard() {
         ]);
 
       setDrivers(driverData.data || []);
-      setActiveRide(activeData.data || null);
+
+      // Update the active ride whenever the API returns new status.
+      const latestRide = activeData.data || null;
+
+      setActiveRide((previousRide) => {
+        if (previousRide?.id !== latestRide?.id) {
+          setChatOpen(false);
+        }
+
+        return latestRide;
+      });
+
       setHistory(historyData.data || []);
+      setError("");
     } catch (err) {
       setError(err.message || "Unable to load dashboard");
     }
-  };
+  }, [request]);
 
+  // Initial load and automatic refresh every 3 seconds
   useEffect(() => {
     loadDashboard();
-  }, []);
 
+    const intervalId = setInterval(() => {
+      loadDashboard();
+    }, 3000);
+
+    return () => clearInterval(intervalId);
+  }, [loadDashboard]);
+
+  // Find available cabs
   const findCabs = async () => {
     if (!pickup.trim() || !drop.trim()) {
       setError("Please enter pickup and drop locations.");
@@ -69,7 +90,9 @@ export default function UserDashboard() {
     setError("");
 
     try {
-      const result = await request("/api/user/drivers/available");
+      const result = await request(
+        "/api/user/drivers/available"
+      );
 
       setDrivers(result.data || []);
       setSelectedDriver(null);
@@ -80,7 +103,13 @@ export default function UserDashboard() {
     }
   };
 
+  // Book a ride
   const bookRide = async () => {
+    if (!selectedDriver?.id) {
+      setError("Please select a driver first.");
+      return;
+    }
+
     if (!pickup.trim() || !drop.trim()) {
       setError("Enter pickup and drop locations first.");
       return;
@@ -90,16 +119,17 @@ export default function UserDashboard() {
     setError("");
 
     try {
-      const result = await request("/api/user/rides", {
+      await request("/api/user/rides", {
         method: "POST",
         body: JSON.stringify({
+          driverId: selectedDriver.id,
           pickupLocation: pickup.trim(),
           dropLocation: drop.trim(),
         }),
       });
 
-      setActiveRide(result.data);
       setSelectedDriver(null);
+      setChatOpen(false);
 
       await loadDashboard();
     } catch (err) {
@@ -109,8 +139,17 @@ export default function UserDashboard() {
     }
   };
 
+  // Normalize ride status
+  const rideStatus = String(
+    activeRide?.status || ""
+  ).trim().toLowerCase();
+
+  // Chat becomes available after driver acceptance.
+  const canChat = ["accepted", "ongoing"].includes(rideStatus);
+
   const completedRides = history.filter(
-    (ride) => ride.status === "COMPLETED"
+    (ride) =>
+      String(ride.status || "").toUpperCase() === "COMPLETED"
   ).length;
 
   return (
@@ -156,6 +195,7 @@ export default function UserDashboard() {
         id="home"
         className="mx-auto w-full max-w-7xl p-4 sm:p-6 lg:p-8"
       >
+        {/* Header */}
         <header className="mb-7 flex items-center justify-between gap-4">
           <div>
             <p className="text-xs font-bold tracking-[0.2em] text-yellow-400">
@@ -178,6 +218,7 @@ export default function UserDashboard() {
             <span>{error}</span>
 
             <button
+              type="button"
               onClick={() => setError("")}
               aria-label="Dismiss error"
             >
@@ -238,7 +279,7 @@ export default function UserDashboard() {
             </label>
 
             <div className="mt-2 flex items-center gap-3 rounded-xl border border-white/10 bg-[#101010] px-4">
-              <span className="text-white">●</span>
+              <span>●</span>
 
               <input
                 value={drop}
@@ -249,6 +290,7 @@ export default function UserDashboard() {
             </div>
 
             <button
+              type="button"
               onClick={findCabs}
               disabled={loading}
               className="mt-6 w-full rounded-xl bg-yellow-400 px-4 py-4 text-sm font-extrabold text-black transition hover:bg-yellow-300 disabled:opacity-50"
@@ -257,7 +299,7 @@ export default function UserDashboard() {
             </button>
           </section>
 
-          {/* Actual OpenStreetMap component */}
+          {/* Map */}
           <section className="min-w-0 rounded-2xl border border-white/10 bg-[#191919] p-5 sm:p-6">
             <h3 className="mb-2 font-bold">Your route</h3>
 
@@ -297,7 +339,9 @@ export default function UserDashboard() {
         <section className="mt-6 rounded-2xl border border-white/10 bg-[#191919] p-5 sm:p-6">
           <div className="mb-5 flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-lg font-bold">Available drivers</h3>
+              <h3 className="text-lg font-bold">
+                Available drivers
+              </h3>
 
               <p className="mt-1 text-sm text-gray-400">
                 Choose a driver for your journey
@@ -305,6 +349,7 @@ export default function UserDashboard() {
             </div>
 
             <button
+              type="button"
               onClick={loadDashboard}
               className="text-sm text-yellow-400 hover:text-yellow-300"
             >
@@ -348,6 +393,7 @@ export default function UserDashboard() {
                   </div>
 
                   <button
+                    type="button"
                     onClick={() => setSelectedDriver(driver)}
                     className={`rounded-lg border px-4 py-2 text-sm font-semibold ${
                       selectedDriver?.id === driver.id
@@ -371,12 +417,8 @@ export default function UserDashboard() {
                 <strong>{selectedDriver.name}</strong>
               </p>
 
-              <p className="mt-2 text-xs text-gray-400">
-                The current booking API does not yet assign the
-                selected driver.
-              </p>
-
               <button
+                type="button"
                 onClick={bookRide}
                 disabled={loading}
                 className="mt-4 w-full rounded-xl bg-yellow-400 p-3 font-bold text-black hover:bg-yellow-300 disabled:opacity-50"
@@ -387,7 +429,7 @@ export default function UserDashboard() {
           )}
         </section>
 
-        {/* Active ride */}
+        {/* Active ride and chat */}
         <section
           id="active-ride"
           className="mt-6 rounded-2xl border border-white/10 bg-[#191919] p-5 sm:p-6"
@@ -408,12 +450,54 @@ export default function UserDashboard() {
 
           {activeRide ? (
             <div className="mt-5 space-y-3 text-sm text-gray-300">
-              <p>From: {activeRide.pickup_location}</p>
-              <p>To: {activeRide.drop_location}</p>
+              <p>
+                From:{" "}
+                {activeRide.pickup_address ??
+                  activeRide.pickup_location ??
+                  "Not available"}
+              </p>
+
+              <p>
+                To:{" "}
+                {activeRide.drop_address ??
+                  activeRide.drop_location ??
+                  "Not available"}
+              </p>
 
               <p className="break-all text-xs text-gray-500">
                 Ride ID: {activeRide.id}
               </p>
+
+              {/* Chat button */}
+              {canChat ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChatOpen((open) => !open)
+                    }
+                    className="rounded-xl bg-yellow-400 px-5 py-3 font-bold text-black hover:bg-yellow-300"
+                  >
+                    💬{" "}
+                    {chatOpen
+                      ? "Hide Chat"
+                      : "Chat with Driver"}
+                  </button>
+
+                  {chatOpen && (
+                    <ChatPanel
+                      rideId={activeRide.id}
+                      role="USER"
+                      onClose={() => setChatOpen(false)}
+                    />
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-gray-400">
+                  Chat will appear after the driver accepts your ride.
+                  Current status: {activeRide.status || "unknown"}
+                </p>
+              )}
             </div>
           ) : (
             <p className="mt-5 text-sm text-gray-400">
@@ -448,11 +532,16 @@ export default function UserDashboard() {
 
                   <div className="min-w-0 flex-1">
                     <p className="break-words text-sm font-semibold">
-                      {ride.pickup_location}
+                      {ride.pickup_address ??
+                        ride.pickup_location ??
+                        "Pickup unavailable"}
                     </p>
 
                     <p className="mt-1 break-words text-xs text-gray-400">
-                      To: {ride.drop_location}
+                      To:{" "}
+                      {ride.drop_address ??
+                        ride.drop_location ??
+                        "Drop unavailable"}
                     </p>
                   </div>
 
