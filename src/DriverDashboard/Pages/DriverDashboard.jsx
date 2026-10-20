@@ -45,7 +45,6 @@ function StatCard({ icon, title, value, subtitle, tone }) {
     yellow: "bg-amber-400",
     purple: "bg-violet-500",
   };
-
   return (
     <article className="flex min-w-0 items-center gap-4 rounded-xl border border-slate-100 bg-white p-4 shadow-sm">
       <div className={`grid h-14 w-14 shrink-0 place-items-center rounded-2xl text-2xl text-white ${colors[tone]}`}>
@@ -72,6 +71,12 @@ export default function DriverDashboard() {
   const [busyRide, setBusyRide] = useState(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [chatRide, setChatRide] = useState(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatText, setChatText] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatSending, setChatSending] = useState(false);
+  const [chatError, setChatError] = useState("");
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
@@ -129,6 +134,38 @@ export default function DriverDashboard() {
     loadDashboard();
   }, [loadDashboard]);
 
+  // Refresh only ride requests in the background so the whole dashboard
+  // does not return to its loading screen every few seconds.
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshRideRequests = async () => {
+      try {
+        const response = await api.get("/api/rides/requests", {
+          params: { _t: Date.now() },
+          headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        });
+        const data = getPayload(response);
+        if (!cancelled) {
+          setRides(Array.isArray(data) ? data : []);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error(
+            "CabGo ride requests refresh failed:",
+            err.response?.data || err.message
+          );
+        }
+      }
+    };
+
+    const intervalId = window.setInterval(refreshRideRequests, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   const toggleAvailability = async () => {
     setAvailabilityLoading(true);
     setError("");
@@ -160,8 +197,23 @@ export default function DriverDashboard() {
     setNotice("");
 
     try {
-      await api.patch(`/api/rides/${rideId}/${action}`);
-      setNotice(action === "accept" ? "Ride accepted successfully." : "Ride declined.");
+      const response = await api.patch(`/api/rides/${rideId}/${action}`);
+      const updatedRide = getPayload(response);
+
+      if (action === "accept") {
+        const acceptedRide = updatedRide?.id
+          ? updatedRide
+          : rides.find((ride) => String(ride.id) === String(rideId));
+
+        if (acceptedRide) {
+          setChatRide({ ...acceptedRide, status: acceptedRide.status || "accepted" });
+          setChatMessages([]);
+          setChatError("");
+        }
+        setNotice("Ride accepted successfully. You can now start the ride or chat with the rider.");
+      } else {
+        setNotice("Ride declined.");
+      }
       await loadDashboard();
     } catch (err) {
       setError(getErrorMessage(err));
@@ -170,10 +222,92 @@ export default function DriverDashboard() {
     }
   };
 
+  const handleActiveRideAction = async (action) => {
+    const rideId = chatRide?.id;
+    if (!rideId || busyRide) return;
+
+    setBusyRide(rideId);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await api.patch(`/api/rides/${rideId}/${action}`);
+      const updatedRide = getPayload(response);
+
+      if (action === "start") {
+        setChatRide({ ...chatRide, ...updatedRide, status: updatedRide?.status || "in_progress" });
+        setNotice("Ride started successfully. Complete the ride when you reach the destination.");
+      } else if (action === "complete") {
+        setChatRide(null);
+        setChatMessages([]);
+        setChatError("");
+        setNotice("Ride completed successfully.");
+      }
+
+      await loadDashboard();
+
+      // Refresh active ride after the status update, if one remains active.
+      if (action === "start") {
+        try {
+          const activeResponse = await api.get("/api/rides/active");
+          const activeData = getPayload(activeResponse);
+          const active = activeData?.data ?? activeData?.ride ?? activeData;
+          if (active?.id) setChatRide(active);
+        } catch (refreshError) {
+          console.error("Could not refresh active ride:", refreshError);
+        }
+      }
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setBusyRide(null);
+    }
+  };
+
+  const loadChatMessages = useCallback(async (rideId, quiet = false) => {
+    if (!rideId) return;
+    if (!quiet) setChatLoading(true);
+    try {
+      const response = await api.get(`/api/rides/${rideId}/messages`);
+      const data = getPayload(response);
+      setChatMessages(Array.isArray(data) ? data : Array.isArray(data?.messages) ? data.messages : []);
+      setChatError("");
+    } catch (err) {
+      setChatError(getErrorMessage(err));
+    } finally {
+      if (!quiet) setChatLoading(false);
+    }
+  }, []);
+
+  const sendChatMessage = async (event) => {
+    event.preventDefault();
+    const message = chatText.trim();
+    if (!message || !chatRide?.id || chatSending) return;
+
+    setChatSending(true);
+    setChatError("");
+    try {
+      await api.post(`/api/rides/${chatRide.id}/messages`, { message });
+      setChatText("");
+      await loadChatMessages(chatRide.id, true);
+    } catch (err) {
+      setChatError(getErrorMessage(err));
+    } finally {
+      setChatSending(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!chatRide?.id) return undefined;
+    loadChatMessages(chatRide.id);
+    const intervalId = window.setInterval(() => {
+      loadChatMessages(chatRide.id, true);
+    }, 3000);
+    return () => window.clearInterval(intervalId);
+  }, [chatRide?.id, loadChatMessages]);
+
   const completedRides = Number(earnings.completed_rides || 0);
   const totalEarnings = Number(earnings.total_earnings || 0);
-  const todayEarnings = Number(earnings.today_earnings || 0);
-  const todayRides = Number(earnings.today_rides || 0);
   const averageFare = Number(earnings.average_fare || 0);
   const maxDaily = Math.max(
     1,
@@ -347,6 +481,7 @@ export default function DriverDashboard() {
                       <button onClick={() => handleRide(rides[0].id, "decline")} disabled={!online || busyRide === rides[0].id} className="rounded-lg border border-red-300 px-3 py-2 text-sm font-semibold text-red-500 disabled:opacity-50">Decline</button>
                       <button onClick={() => handleRide(rides[0].id, "accept")} disabled={!online || busyRide === rides[0].id} className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">{busyRide === rides[0].id ? "Processing..." : "Accept"}</button>
                     </div>
+                    <p className="mt-2 text-xs text-slate-500">Accept the ride to start chatting with the rider.</p>
                   </div>
                 ) : (
                   <div className="absolute left-3 top-3 max-w-xs rounded-xl bg-white/95 p-4 shadow-md sm:left-4 sm:top-4">
@@ -366,20 +501,11 @@ export default function DriverDashboard() {
                   <button onClick={() => setActivePage("Earnings")} className="text-sm font-semibold text-blue-600">View Details →</button>
                 </div>
                 <div className="mt-3 flex items-center gap-3">
-  <p className="text-3xl font-extrabold">
-    {money(todayEarnings)}
-  </p>
-
-  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">
-    Today
-  </span>
-</div>
-
-<p className="mt-1 text-xs text-slate-400">
-  {todayRides} completed rides today
-</p>
-
-{dailyEarnings.length ? (
+                  <p className="text-3xl font-extrabold">{money(totalEarnings)}</p>
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700">Total</span>
+                </div>
+                <p className="mt-1 text-xs text-slate-400">Total earnings returned by your API</p>
+                {dailyEarnings.length ? (
                   <div className="mt-5 flex h-32 items-end gap-2 border-b border-slate-100 pb-2">
                     {[...dailyEarnings].slice(-7).map((item, index) => {
                       const amount = Number(item.daily_earnings || 0);
@@ -423,6 +549,85 @@ export default function DriverDashboard() {
               </section>
             </div>
           </div>
+
+          {chatRide?.id && (
+            <section className="mt-5 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <h2 className="text-lg font-bold">Active Ride</h2>
+                  <p className="mt-1 break-words text-sm text-slate-600">
+                    {chatRide.pickup_address || "Pickup"} → {chatRide.drop_address || "Drop"}
+                  </p>
+                  <p className="mt-2 text-sm">
+                    Status: {" "}
+                    <span className="font-semibold">
+                      {String(chatRide.status || "unknown").replaceAll("_", " ").toUpperCase()}
+                    </span>
+                  </p>
+                  {chatRide.fare_amount != null && (
+                    <p className="mt-1 text-sm font-semibold">Fare: {money(chatRide.fare_amount)}</p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  {String(chatRide.status || "").toLowerCase() === "accepted" && (
+                    <button
+                      type="button"
+                      onClick={() => handleActiveRideAction("start")}
+                      disabled={Boolean(busyRide)}
+                      className="rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyRide === chatRide.id ? "Processing..." : "Start Ride"}
+                    </button>
+                  )}
+
+                  {String(chatRide.status || "").toLowerCase() === "in_progress" && (
+                    <button
+                      type="button"
+                      onClick={() => handleActiveRideAction("complete")}
+                      disabled={Boolean(busyRide)}
+                      className="rounded-lg bg-emerald-600 px-5 py-3 font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {busyRide === chatRide.id ? "Processing..." : "Complete Ride"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {chatRide && (
+            <section className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-[#17212e] px-5 py-4 text-white">
+                <div>
+                  <h2 className="font-bold">💬 Chat with Rider</h2>
+                  <p className="mt-1 text-xs text-slate-300">{chatRide.pickup_address || "Pickup"} → {chatRide.drop_address || "Drop"}</p>
+                </div>
+                <button type="button" onClick={() => { setChatRide(null); setChatMessages([]); setChatError(""); }} className="rounded-lg border border-slate-500 px-3 py-1.5 text-sm hover:bg-white/10">Close chat ✕</button>
+              </div>
+              {chatError && <p role="alert" className="mx-4 mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{chatError}</p>}
+              <div className="flex max-h-80 min-h-40 flex-col gap-3 overflow-y-auto bg-slate-50 p-4">
+                {chatLoading && chatMessages.length === 0 ? (
+                  <p className="text-sm text-slate-500">Loading messages…</p>
+                ) : chatMessages.length === 0 ? (
+                  <p className="m-auto text-sm text-slate-500">No messages yet. Send a message to the rider.</p>
+                ) : chatMessages.map((message) => {
+                  const fromDriver = String(message.sender_type || "").toUpperCase() === "DRIVER";
+                  return (
+                    <div key={message.id} className={`max-w-[85%] rounded-2xl px-4 py-2.5 shadow-sm ${fromDriver ? "self-end rounded-br-sm bg-emerald-600 text-white" : "self-start rounded-bl-sm border border-slate-200 bg-white text-slate-800"}`}>
+                      <p className="break-words text-sm">{message.message}</p>
+                      <p className={`mt-1 text-[10px] ${fromDriver ? "text-emerald-100" : "text-slate-400"}`}>{fromDriver ? "You" : "Rider"} · {message.created_at ? new Date(message.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : ""}</p>
+                    </div>
+                  );
+                })}
+              </div>
+              <form onSubmit={sendChatMessage} className="flex gap-2 border-t border-slate-100 p-3 sm:p-4">
+                <input value={chatText} onChange={(event) => setChatText(event.target.value)} maxLength={1000} placeholder="Type a message to the rider…" className="min-w-0 flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" />
+                <button type="submit" disabled={!chatText.trim() || chatSending} className="rounded-xl bg-emerald-600 px-5 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{chatSending ? "Sending…" : "Send"}</button>
+              </form>
+              <p className="px-4 pb-3 text-xs text-slate-400">Messages refresh automatically every 3 seconds.</p>
+            </section>
+          )}
 
           {/* Bottom panels */}
           <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[1fr_1.1fr]">
@@ -470,5 +675,3 @@ export default function DriverDashboard() {
     </div>
   );
 }
-
-

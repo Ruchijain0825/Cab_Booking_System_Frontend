@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import RideMap from "../Pages/RideMap.jsx";
 import ChatPanel from "../Components/ChatPanel.jsx";
+import RidePayment from "../Pages/RidePayment.jsx";
 
 const API_URL =
   import.meta.env.VITE_API_URL || "http://localhost:8080";
@@ -522,35 +523,41 @@ export default function UserDashboard() {
               No rides in your history yet.
             </p>
           ) : (
-            <div className="mt-4 divide-y divide-white/10">
-              {history.slice(0, 5).map((ride) => (
-                <div
-                  key={ride.id}
-                  className="flex flex-wrap items-center gap-3 py-4"
-                >
-                  <span className="text-xl">🚕</span>
+            
+<div className="mt-4 divide-y divide-white/10">
+  {history.slice(0, 5).map((ride) => (
+    <div
+      key={ride.id}
+      className="flex flex-wrap items-center gap-3 py-4"
+    >
+      <span className="text-xl">🚕</span>
 
-                  <div className="min-w-0 flex-1">
-                    <p className="break-words text-sm font-semibold">
-                      {ride.pickup_address ??
-                        ride.pickup_location ??
-                        "Pickup unavailable"}
-                    </p>
+      <div className="min-w-0 flex-1">
+        <p className="break-words text-sm font-semibold">
+          {ride.pickup_address ??
+            ride.pickup_location ??
+            "Pickup unavailable"}
+        </p>
 
-                    <p className="mt-1 break-words text-xs text-gray-400">
-                      To:{" "}
-                      {ride.drop_address ??
-                        ride.drop_location ??
-                        "Drop unavailable"}
-                    </p>
-                  </div>
+        <p className="mt-1 break-words text-xs text-gray-400">
+          To:{" "}
+          {ride.drop_address ??
+            ride.drop_location ??
+            "Drop unavailable"}
+        </p>
 
-                  <span className="rounded-full bg-white/5 px-3 py-2 text-xs text-yellow-400">
-                    {ride.status}
-                  </span>
-                </div>
-              ))}
-            </div>
+        <span className="mt-2 inline-block rounded-full bg-white/5 px-3 py-1 text-xs text-yellow-400">
+          {ride.status}
+        </span>
+
+        {String(ride.status || "").toUpperCase() === "COMPLETED" && (
+          <RidePayment ride={ride} />
+        )}
+      </div>
+    </div>
+  ))}
+</div>
+
           )}
         </section>
 
