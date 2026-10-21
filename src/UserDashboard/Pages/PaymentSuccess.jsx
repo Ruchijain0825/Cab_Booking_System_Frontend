@@ -60,7 +60,7 @@ export default function PaymentSuccess() {
 
         if (!cancelled) {
           setStatus(
-            "Payment confirmation is still pending. Please check your ride status again shortly."
+            "Payment done."
           );
         }
       } catch (error) {
